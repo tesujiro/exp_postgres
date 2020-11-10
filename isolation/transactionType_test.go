@@ -19,13 +19,13 @@ const (
 )
 
 const test_id int = 1
-const connStr string = "user=tesujiro dbname=postgres sslmode=disable"
 
 type preparer interface {
 	Prepare(query string) (*sql.Stmt, error)
 }
 
 func setup(t *testing.T) (*sql.DB, error) {
+	connStr := "user=tesujiro dbname=postgres sslmode=disable"
 	db, err := sql.Open("postgres", connStr)
 	if err != nil {
 		t.Fatalf("sql.Open error:%v", err)
@@ -104,33 +104,22 @@ func TestTransactionTypes(t *testing.T) {
 	}{
 		{scene: 1, state: TRN_BEGIN, want: test_id * 100},
 		{scene: 2, state: TRN_BEGIN, want: test_id * 100},
-		{scene: 3, state: TRN_NO, want: test_id * 100},
+		{scene: 0, state: TRN_NO, want: test_id * 100},
 		{scene: 1, state: TRN_IN_PROGRESS, sql: fmt.Sprintf("update account set balance = balance+1 where id = %v;", test_id), want: test_id*100 + 1},
 		{scene: 2, state: TRN_IN_PROGRESS, want: test_id * 100}, // Repeatable Read
 		{scene: 2, state: TRN_COMMIT, want: test_id * 100},      // Repeatable Read
-		{scene: 3, state: TRN_NO, want: test_id * 100},
+		{scene: 0, state: TRN_NO, want: test_id * 100},
 		{scene: 1, state: TRN_COMMIT, sql: fmt.Sprintf("update account set balance = balance+1 where id = %v;", test_id), want: test_id*100 + 2},
-		{scene: 3, state: TRN_NO, want: test_id*100 + 2},
+		{scene: 0, state: TRN_NO, want: test_id*100 + 2},
 		//{scene: 2, tran: false,commit: false,sql: "", want: test_id*100 + 2},
 		//{scene: 2, tran: false,commit: false,sql: fmt.Sprintf("update account set balance = balance+10 where id = %v;", test_id), want: test_id*100 + 10},
 	}
 
-	dbs := make(map[int]*sql.DB)
 	txs := make(map[int]*sql.Tx)
 	var tx *sql.Tx
 
 	for test_no, test := range tests {
 		fmt.Println(test_no)
-
-		db, ok := dbs[test.scene]
-		if !ok {
-			conn, err := sql.Open("postgres", connStr)
-			if err != nil {
-				t.Fatalf("sql.Open error:%v", err)
-				return
-			}
-			db = conn
-		}
 
 		if test.state == TRN_NO {
 			_, err = db.Exec(test.sql)
