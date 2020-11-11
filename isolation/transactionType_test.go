@@ -119,8 +119,9 @@ func TestTransactionTypes(t *testing.T) {
 		{scene: 0, state: TRN_NO, want: test_id * 100},
 		{scene: 1, state: TRN_COMMIT, sql: fmt.Sprintf("update account set balance = balance+1 where id = %v;", test_id), want: test_id*100 + 2},
 		{scene: 0, state: TRN_NO, want: test_id*100 + 2},
-		{scene: 2, state: TRN_IN_PROGRESS, want: test_id * 100}, // Repeatable Read
-		//{scene: 2, state: TRN_COMMIT, sql: fmt.Sprintf("update account set balance = %v where id = %v;", test_id*100, test_id), want: test_id * 100},
+		{scene: 2, state: TRN_COMMIT, want: test_id * 100}, // Repeatable Read
+		{scene: 1, state: TRN_BEGIN},
+		{scene: 1, state: TRN_COMMIT, sql: fmt.Sprintf("update account set balance = %v where id = %v;", test_id*100, test_id), want: test_id * 100},
 	}
 
 	txs := make(map[int]*sql.Tx)
