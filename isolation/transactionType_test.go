@@ -15,7 +15,8 @@ type state int
 const (
 	TRN_NO state = iota
 	TRN_BEGIN
-	TRN_IN_PROGRESS
+	TRN_SQL
+	TRN_CHECK
 	TRN_COMMIT
 	TRN_ROLLBACK
 )
@@ -109,26 +110,58 @@ func TestTransactionTypes(t *testing.T) {
 		sql   string
 		want  int
 	}{
+		/* READ UNCOMMITTED same as READ COMMITED for postgresql */
+		/* READ COMMITTED */
 		{scene: 1, state: TRN_BEGIN},
 		{scene: 2, state: TRN_BEGIN},
-		{scene: 1, state: TRN_IN_PROGRESS, sql: "SET TRANSACTION ISOLATION LEVEL REPEATABLE READ;", want: test_id * 100},
-		{scene: 2, state: TRN_IN_PROGRESS, sql: "SET TRANSACTION ISOLATION LEVEL REPEATABLE READ;", want: test_id * 100},
+		{scene: 1, state: TRN_SQL, sql: "SET TRANSACTION ISOLATION LEVEL READ COMMITTED;"},
+		{scene: 2, state: TRN_SQL, sql: "SET TRANSACTION ISOLATION LEVEL READ COMMITTED;"},
 		{scene: 0, state: TRN_NO, want: test_id * 100},
-		{scene: 1, state: TRN_IN_PROGRESS, sql: fmt.Sprintf("update account set balance = balance+1 where id = %v;", test_id), want: test_id*100 + 1},
-		{scene: 2, state: TRN_IN_PROGRESS, want: test_id * 100}, // Repeatable Read
+		{scene: 1, state: TRN_SQL, sql: fmt.Sprintf("update account set balance = balance+1 where id = %v;", test_id)},
+		{scene: 1, state: TRN_CHECK, want: test_id*100 + 1},
+		{scene: 2, state: TRN_CHECK, want: test_id * 100}, // Read Commited
 		{scene: 0, state: TRN_NO, want: test_id * 100},
-		{scene: 1, state: TRN_COMMIT, sql: fmt.Sprintf("update account set balance = balance+1 where id = %v;", test_id), want: test_id*100 + 2},
+		{scene: 1, state: TRN_SQL, sql: fmt.Sprintf("update account set balance = balance+1 where id = %v;", test_id)},
+		{scene: 1, state: TRN_CHECK, want: test_id*100 + 2},
+		{scene: 1, state: TRN_COMMIT},
 		{scene: 0, state: TRN_NO, want: test_id*100 + 2},
-		{scene: 2, state: TRN_COMMIT, want: test_id * 100}, // Repeatable Read
+		{scene: 2, state: TRN_CHECK, want: test_id*100 + 2}, // Read Commited
+		{scene: 2, state: TRN_COMMIT},
+		{scene: 3, state: TRN_BEGIN},
+		{scene: 3, state: TRN_SQL, sql: fmt.Sprintf("update account set balance = %v where id = %v;", test_id*100, test_id)},
+		{scene: 3, state: TRN_COMMIT},
+		{scene: 0, state: TRN_NO, want: test_id * 100},
+
+		/* REPEATABLE READ */
 		{scene: 1, state: TRN_BEGIN},
-		{scene: 1, state: TRN_COMMIT, sql: fmt.Sprintf("update account set balance = %v where id = %v;", test_id*100, test_id), want: test_id * 100},
+		{scene: 2, state: TRN_BEGIN},
+		{scene: 1, state: TRN_SQL, sql: "SET TRANSACTION ISOLATION LEVEL REPEATABLE READ;"},
+		{scene: 2, state: TRN_SQL, sql: "SET TRANSACTION ISOLATION LEVEL REPEATABLE READ;"},
+		{scene: 0, state: TRN_NO, want: test_id * 100},
+		{scene: 1, state: TRN_SQL, sql: fmt.Sprintf("update account set balance = balance+1 where id = %v;", test_id)},
+		{scene: 1, state: TRN_CHECK, want: test_id*100 + 1},
+		{scene: 2, state: TRN_CHECK, want: test_id * 100}, // Repeatable Read
+		{scene: 0, state: TRN_NO, want: test_id * 100},
+		{scene: 1, state: TRN_SQL, sql: fmt.Sprintf("update account set balance = balance+1 where id = %v;", test_id)},
+		{scene: 1, state: TRN_CHECK, want: test_id*100 + 2},
+		{scene: 1, state: TRN_COMMIT},
+		{scene: 0, state: TRN_NO, want: test_id*100 + 2},
+		{scene: 2, state: TRN_CHECK, want: test_id * 100}, // Repeatable Read
+		{scene: 2, state: TRN_COMMIT},
+		{scene: 3, state: TRN_BEGIN},
+		{scene: 3, state: TRN_SQL, sql: fmt.Sprintf("update account set balance = %v where id = %v;", test_id*100, test_id)},
+		{scene: 3, state: TRN_COMMIT},
+		{scene: 0, state: TRN_NO, want: test_id * 100},
 	}
 
 	txs := make(map[int]*sql.Tx)
 	var tx *sql.Tx
 
 	for test_no, test := range tests {
+		color := fmt.Sprintf("%d", 30+test.scene%8)
+		fmt.Printf("\x1b[" + color + "m")
 		fmt.Println(test_no, test)
+		fmt.Printf("\x1b[0m")
 
 		if test.state == TRN_NO {
 			ctx, cancel := context.WithTimeout(context.Background(), 100*time.Millisecond)
@@ -143,7 +176,8 @@ func TestTransactionTypes(t *testing.T) {
 
 		} else {
 			tx = txs[test.scene]
-			if test.state == TRN_BEGIN {
+			switch test.state {
+			case TRN_BEGIN:
 				tx_tmp, err := db.Begin()
 				if err != nil {
 					t.Fatalf("db.Begin error: %v\n", err)
@@ -151,9 +185,22 @@ func TestTransactionTypes(t *testing.T) {
 				}
 				txs[test.scene] = tx_tmp
 				tx = tx_tmp
-			}
-
-			if test.sql != "" {
+			case TRN_COMMIT:
+				err = tx.Commit()
+				if err != nil {
+					t.Fatalf("tx.Commit error: %v\n", err)
+					return
+				}
+			case TRN_ROLLBACK:
+				err = tx.Rollback()
+				if err != nil {
+					t.Fatalf("tx.Rollback error: %v\n", err)
+					return
+				}
+			case TRN_SQL:
+				if test.sql == "" {
+					continue
+				}
 				stmt, err := tx.Prepare(test.sql)
 				if err != nil {
 					t.Fatalf("%q: %s\n", err, test.sql)
@@ -166,16 +213,9 @@ func TestTransactionTypes(t *testing.T) {
 				if err != nil {
 					t.Fatalf("%q: %s\n", err, test.sql)
 				}
-			}
-			if test.state != TRN_BEGIN {
+			case TRN_CHECK:
 				check(t, tx, test.want)
-			}
-			if test.state == TRN_COMMIT {
-				err = tx.Commit()
-				if err != nil {
-					t.Fatalf("tx.Commit error: %v\n", err)
-					return
-				}
+
 			}
 		}
 	}
